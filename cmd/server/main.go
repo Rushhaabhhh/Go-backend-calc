@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"html/template"
+	
 
 	"github.com/c4gt/tornado-nginx-go-backend/internal/config"
 	"github.com/c4gt/tornado-nginx-go-backend/internal/handlers"
@@ -58,6 +60,18 @@ func main() {
 }
 
 func setupRoutes(router *gin.Engine, handler *handlers.Handler) {
+
+	// Create a FuncMap with 'add' for template arithmetic
+    funcMap := template.FuncMap{
+        "add": func(a, b int) int {
+            return a + b
+        },
+    }
+
+    // Load HTML templates with FuncMap
+    router.SetFuncMap(funcMap)
+    router.LoadHTMLGlob("web/templates/*")
+	
 	// Static files
 	router.Static("/static", "./web/static")
 	router.LoadHTMLGlob("web/templates/*")

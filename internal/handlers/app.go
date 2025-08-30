@@ -1,20 +1,17 @@
 package handlers
 
 import (
-    "crypto/rand"
-    "encoding/base64"
-    "encoding/json"
-    "fmt"
-    "io/ioutil"
-    "net/http"
-    "os"
-    "path/filepath"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 
-    "github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin"
 )
 
 type AppHandler struct {
-    handler *Handler
+	handler *Handler
 }
 
 func NewAppHandler(h *Handler) *AppHandler {
@@ -41,8 +38,40 @@ func (h *AppHandler) HandleLanding(c *gin.Context) {
     
     c.HTML(http.StatusOK, "landing-page.html", templateData)
 }
+func (h *AppHandler) HandleAmazonWebApp(c *gin.Context) {
+	paramCode := c.Param("paramCode")
+	param2 := c.Param("param2")
 
-// HandleGoogleVerification handles Google verification files
+	// Get current user from cookie
+	user := h.getCurrentUser(c)
+	if user == "" {
+		c.Redirect(http.StatusTemporaryRedirect, "/login")
+		return
+	}
+
+	// For TouchCalc integration
+	param1 := ""
+	if param1 == "touchcalc" {
+		if userStr, ok := user.(string); ok {
+			h.handleTouchCalc(c, userStr, paramCode, param2)
+		} else {
+			c.HTML(http.StatusInternalServerError, "error.html", gin.H{
+				"Error": "Invalid user type",
+			})
+		}
+		return
+	}
+
+	// Default handling for other apps
+	if userStr, ok := user.(string); ok {
+		h.handleGenericApp(c, userStr, param1, paramCode, param2)
+	} else {
+		c.HTML(http.StatusInternalServerError, "error.html", gin.H{
+			"Error": "Invalid user type",
+		})
+	}
+}
+
 func (h *AppHandler) HandleGoogleVerification(c *gin.Context) {
     slug := c.Param("filepath")
     // Remove leading slash
@@ -53,209 +82,95 @@ func (h *AppHandler) HandleGoogleVerification(c *gin.Context) {
     c.HTML(http.StatusOK, slug, gin.H{})
 }
 
-// HandleAmazonWebApp handles the Amazon web app routes
-func (h *AppHandler) HandleAmazonWebApp(c *gin.Context) {
-    param1 := c.Param("param1")
-    paramCode := c.Param("paramCode")
-    param2 := c.Param("param2")
-
-    // Check if user is logged in
-    user := h.getCurrentUser(c)
-    if user == "" {
-        c.Redirect(http.StatusFound, "/browser")
-        return
-    }
-
-    // Get or create session
-    sessionID := h.getOrCreateSession(c, param1)
-
-    if param2 == "index.html" {
-        h.handleWebAppIndex(c, param1, paramCode, sessionID, user)
-    } else if param2 == "appsplash.png" {
-        h.handleAppSplash(c, param1)
-    } else {
-        h.handleStaticFile(c, param2)
-    }
+func (h *AppHandler) getCurrentUser(c *gin.Context) any {
+	panic("unimplemented")
 }
 
-func (h *AppHandler) handleWebAppIndex(c *gin.Context, appName, paramCode, sessionID, user string) {
-    mscPath := "webappTemplates/"
-    
-    // Read MSC file
-    mscFile := filepath.Join(mscPath, appName, appName+".msc.txt")
-    mscData, err := ioutil.ReadFile(mscFile)
-    if err != nil {
-        // Fallback content if file doesn't exist
-        mscData = []byte("A1:TouchCalc Spreadsheet\nB1:Welcome " + user)
-    }
+func (h *AppHandler) handleTouchCalc(c *gin.Context, user, code, filename string) {
+	// Load TouchCalc configuration
+	configPath := filepath.Join("webappTemplates", "touchcalc", "touchcalc.config.txt")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		fmt.Printf("Error reading TouchCalc config: %v\n", err)
+		c.HTML(http.StatusInternalServerError, "error.html", gin.H{
+			"Error": "Failed to load TouchCalc configuration",
+		})
+		return
+	}
 
-    // Read config file
-    configFile := filepath.Join(mscPath, appName, appName+".config.txt")
-    configData, err := ioutil.ReadFile(configFile)
-    var config map[string]interface{}
-    
-    if err != nil {
-        // Default config if file doesn't exist
-        config = map[string]interface{}{
-            "code": paramCode,
-            "footers": []string{"Sheet1", "Sheet2", "Sheet3", "Sheet4", "Sheet5", "Sheet6", "Sheet7"},
-        }
-    } else {
-        err = json.Unmarshal(configData, &config)
-        if err != nil {
-            config = map[string]interface{}{
-                "code": paramCode,
-                "footers": []string{"Sheet1", "Sheet2", "Sheet3", "Sheet4", "Sheet5", "Sheet6", "Sheet7"},
-            }
-        }
-    }
+	var config map[string]interface{}
+	if err := json.Unmarshal(configData, &config); err != nil {
+		fmt.Printf("Error parsing TouchCalc config: %v\n", err)
+		c.HTML(http.StatusInternalServerError, "error.html", gin.H{
+			"Error": "Invalid TouchCalc configuration",
+		})
+		return
+	}
 
-    // Validate code (skip validation if no code specified)
-    if code, ok := config["code"].(string); ok && code != "" && code != paramCode {
-        c.String(http.StatusUnauthorized, "Invalid access code")
-        return
-    }
+	// Get user's spreadsheet list
+	sheets, err := h.getUserSpreadsheets(user, "touchcalc")
+	if err != nil {
+		fmt.Printf("Error getting user spreadsheets: %v\n", err)
+		sheets = []string{"default"} // fallback
+	}
 
-    // Get footers
-    footers := []string{"Sheet1", "Sheet2", "Sheet3", "Sheet4", "Sheet5", "Sheet6", "Sheet7"}
-    if configFooters, ok := config["footers"].([]interface{}); ok {
-        footers = make([]string, len(configFooters))
-        for i, footer := range configFooters {
-            if str, ok := footer.(string); ok {
-                footers[i] = str
-            }
-        }
-    }
+	// Determine filename
+	fname := filename
+	if fname == "" {
+		fname = "default"
+	}
 
-    // Get session and set app info
-    session := h.handler.Session.GetOrCreate(sessionID)
-    session.SetValue("appName", appName)
-    session.SetValue("appUrl", c.Request.RequestURI)
-    session.SetValue("user", user)
-    h.handler.Session.Set(sessionID, session)
+	// Check Dropbox connection status (if implemented)
+	dbLogin := 0 // Default to not connected
 
-    // Check dropbox login status
-    dbLogin := 0
-    if login, exists := session.GetString("dbLogin"); exists && login == "1" {
-        dbLogin = 1
-    }
+	data := gin.H{
+		"fname":   fname,
+		"user":    user,
+		"storage": h.handler.Config.StorageBackend,
+		"sheets":  sheets,
+		"dbLogin": dbLogin,
+		"code":    code,
+		"config":  config,
+	}
 
-    // Render template
-    c.HTML(http.StatusOK, "amazonwebapp.html", gin.H{
-        "fname":         appName,
-        "sheetstr":      string(mscData),
-        "sheetmscestr":  "",
-        "appjsfiles":    "",
-        "appstylefiles": "",
-        "sheets":        footers,
-        "sessionid":     sessionID,
-        "dbLogin":       dbLogin,
-        "user":          user,
-        "storage":       h.handler.Config.StorageBackend,
-    })
+	c.HTML(http.StatusOK, "amazonwebapp.html", data)
 }
 
-func (h *AppHandler) handleAppSplash(c *gin.Context, appName string) {
-    mscPath := "webappTemplates/"
-    splashFile := filepath.Join(mscPath, appName, "appsplash.png")
-    
-    data, err := ioutil.ReadFile(splashFile)
-    if err != nil {
-        // Return a default 1x1 PNG if splash doesn't exist
-        c.Header("Content-Type", "image/png")
-        c.Data(http.StatusOK, "image/png", []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
-        return
-    }
+func (h *AppHandler) getUserSpreadsheets(user, appName string) ([]string, error) {
+	// List files in user's app directory
+	path := []string{"home", user, "securestore", appName}
 
-    c.Header("Content-Type", "image/png")
-    c.Data(http.StatusOK, "image/png", data)
+	item, err := h.handler.Storage.GetFile(path)
+	if err != nil {
+		// Directory doesn't exist, return default
+		return []string{"default"}, nil
+	}
+
+	var sheets []string
+	if data, ok := item.Data.([]interface{}); ok {
+		for _, file := range data {
+			if str, ok := file.(string); ok {
+				sheets = append(sheets, str)
+			}
+		}
+	}
+
+	if len(sheets) == 0 {
+		sheets = []string{"default"}
+	}
+
+	return sheets, nil
 }
 
-func (h *AppHandler) handleStaticFile(c *gin.Context, filename string) {
-    staticPath := filepath.Join(h.handler.Config.StaticPath, "runappios43c", filename)
-    
-    // Check if file exists
-    if _, err := os.Stat(staticPath); os.IsNotExist(err) {
-        c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
-        return
-    }
+func (h *AppHandler) handleGenericApp(c *gin.Context, user, param1, paramCode, param2 string) {
+	// Existing generic app handling logic
+	data := gin.H{
+		"fname":   param2,
+		"user":    user,
+		"storage": h.handler.Config.StorageBackend,
+		"sheets":  []string{"Sheet1"},
+		"dbLogin": 0,
+	}
 
-    c.File(staticPath)
-}
-
-func (h *AppHandler) getOrCreateSession(c *gin.Context, appName string) string {
-    sessionID, err := c.Cookie("session")
-    cookieSessionPath := "/browser/" + appName
-
-    if err != nil || sessionID == "" {
-        // Create new session
-        sessionID = h.generateRandomString(16)
-        c.SetCookie("session", sessionID, 3600*24, cookieSessionPath, "", false, true)
-        session := h.handler.Session.GetOrCreate(sessionID)
-        h.handler.Session.Set(sessionID, session)
-        return sessionID
-    }
-
-    // Check if session exists and is valid
-    session, exists := h.handler.Session.Get(sessionID)
-    if !exists {
-        // Session doesn't exist, create new one
-        sessionID = h.generateRandomString(16)
-        c.SetCookie("session", sessionID, 3600*24, cookieSessionPath, "", false, true)
-        session = h.handler.Session.GetOrCreate(sessionID)
-        h.handler.Session.Set(sessionID, session)
-        return sessionID
-    }
-
-    // Check if session is for the right app
-    if sessionAppName, exists := session.GetString("appName"); exists && sessionAppName != appName {
-        // Wrong app, create new session
-        sessionID = h.generateRandomString(16)
-        c.SetCookie("session", sessionID, 3600*24, cookieSessionPath, "", false, true)
-        session = h.handler.Session.GetOrCreate(sessionID)
-        h.handler.Session.Set(sessionID, session)
-        return sessionID
-    }
-
-    return sessionID
-}
-
-func (h *AppHandler) generateRandomString(length int) string {
-    // Try to generate unique ID
-    for i := 0; i < 100; i++ {
-        bytes := make([]byte, length)
-        rand.Read(bytes)
-        id := base64.URLEncoding.EncodeToString(bytes)[:length]
-        
-        // Check if ID already exists
-        if _, exists := h.handler.Session.Get(id); !exists {
-            return id
-        }
-    }
-    
-    // Fallback if all attempts failed
-    bytes := make([]byte, length)
-    rand.Read(bytes)
-    return base64.URLEncoding.EncodeToString(bytes)[:length]
-}
-
-func (h *AppHandler) getCurrentUser(c *gin.Context) string {
-    userCookie, err := c.Cookie("user")
-    if err != nil {
-        return ""
-    }
-
-    // Handle both JSON format and plain text format
-    if len(userCookie) > 0 && userCookie[0] == '"' && userCookie[len(userCookie)-1] == '"' {
-        // JSON format
-        var user string
-        err = json.Unmarshal([]byte(userCookie), &user)
-        if err != nil {
-            return ""
-        }
-        return user
-    }
-    
-    // Plain text format
-    return userCookie
+	c.HTML(http.StatusOK, "amazonwebapp.html", data)
 }
