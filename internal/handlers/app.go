@@ -52,8 +52,12 @@ func (h *AppHandler) HandleAmazonWebApp(c *gin.Context) {
 	// For TouchCalc integration
 	param1 := ""
 	if param1 == "touchcalc" {
-		if userStr, ok := user.(string); ok {
-			h.handleTouchCalc(c, userStr, paramCode, param2)
+		if user != "" {
+			if(user == "") {
+				c.Redirect(http.StatusTemporaryRedirect, "/login")
+				return
+			}
+			h.handleTouchCalc(c, user, paramCode, param2)
 		} else {
 			c.HTML(http.StatusInternalServerError, "error.html", gin.H{
 				"Error": "Invalid user type",
@@ -63,8 +67,8 @@ func (h *AppHandler) HandleAmazonWebApp(c *gin.Context) {
 	}
 
 	// Default handling for other apps
-	if userStr, ok := user.(string); ok {
-		h.handleGenericApp(c, userStr, param1, paramCode, param2)
+	if user != "" {
+		h.handleGenericApp(c, user, param1, paramCode, param2)
 	} else {
 		c.HTML(http.StatusInternalServerError, "error.html", gin.H{
 			"Error": "Invalid user type",
@@ -82,8 +86,25 @@ func (h *AppHandler) HandleGoogleVerification(c *gin.Context) {
     c.HTML(http.StatusOK, slug, gin.H{})
 }
 
-func (h *AppHandler) getCurrentUser(c *gin.Context) any {
-	panic("unimplemented")
+func (h *AppHandler) getCurrentUser(c *gin.Context) string {
+    userCookie, err := c.Cookie("user")
+    if err != nil {
+        return ""
+    }
+
+    // Handle both JSON format and plain text format
+    if len(userCookie) > 0 && userCookie[0] == '"' && userCookie[len(userCookie)-1] == '"' {
+        // JSON format
+        var user string
+        err = json.Unmarshal([]byte(userCookie), &user)
+        if err != nil {
+            return ""
+        }
+        return user
+    }
+    
+    // Plain text format
+    return userCookie
 }
 
 func (h *AppHandler) handleTouchCalc(c *gin.Context, user, code, filename string) {
